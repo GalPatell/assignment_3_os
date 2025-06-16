@@ -31,6 +31,9 @@ void write_log(char *shm, int index) {
   char *suffix = " logging!";
   for (int i = 0; suffix[i]; i++)
     msg[len++] = suffix[i];
+  // Append '!' characters — 1 per child index
+  for (int j = 0; j <= index && len < MAX_MSG_LEN - 1; j++)
+    msg[len++] = '!';
   msg[len] = '\0'; // null terminator
 
   for (char *ptr = shm; ptr + HEADER_SIZE + len < shm + PGSIZE;) {
@@ -38,21 +41,23 @@ void write_log(char *shm, int index) {
 
     if (__sync_val_compare_and_swap(hdr, 0, make_header(index, len)) == 0) {
       memcpy(ptr + HEADER_SIZE, msg, len);
+      ptr += HEADER_SIZE + len;
+      ptr = (char *)(((uint64)ptr + 3) & ~3); // align
+      sleep(1); // small pause to allow other children a chance
 
-      //printf("Child %d wrote to shared buffer.\n", index);
-
-      exit(0);
-    } else {
+      } else {
       ptr += HEADER_SIZE + len;
       ptr = (char *)(((uint64)ptr + 3) & ~3); // align
     }
   }
 
-  exit(0); // fail silently if no space
+  exit(0); 
 }
 
-void read_log(char *shm) {
-  char *ptr = shm;
+int read_log_live(char *shm, int *last_offset) {
+  char *ptr = shm + *last_offset;
+  int msg_count = 0;
+
   while (ptr + HEADER_SIZE < shm + PGSIZE) {
     uint32 header = *(uint32 *)ptr;
     if (header == 0)
@@ -66,12 +71,15 @@ void read_log(char *shm) {
     msg[len] = '\0';
 
     printf("Parent read message from child %d: %s\n", index, msg);
+    msg_count++;
 
     ptr += HEADER_SIZE + len;
     ptr = (char *)(((uint64)ptr + 3) & ~3);
   }
-}
 
+  *last_offset = ptr - shm;
+  return msg_count; // return number of messages read
+}
 
 int main() {
   char *buffer = malloc(PGSIZE);
@@ -83,22 +91,39 @@ int main() {
   memset(buffer, 0, PGSIZE);
   int mypid = getpid();
 
-  // Fork children
   for (int i = 0; i < MAX_CHILDREN; i++) {
     int pid = fork();
     if (pid == 0) {
       char *mapped = (char *)map_shared_pages((void *)buffer, PGSIZE, mypid);
       if ((uint64)mapped == 0 || mapped == (void *)-1)
         exit(1);
-
+      sleep(5); // let parent start scanning
       write_log(mapped, i);
     }
   }
-  // Wait for all children
-  for (int i = 0; i < MAX_CHILDREN; i++)
-    wait(0);
 
-  // Read log from shared memory
-  read_log(buffer);
+  int offset = 0;
+  int total_messages = 0;
+
+  int idle_rounds = 0;
+  const int MAX_IDLE = 10;  // max rounds without new messages before stopping
+  for (;;) {
+    int msgs_read = read_log_live(buffer, &offset);
+    total_messages += msgs_read;
+
+    if (msgs_read == 0) {
+        idle_rounds++;
+    } else {
+        idle_rounds = 0; // reset if we made progress
+    }
+    
+    if (offset + HEADER_SIZE >= PGSIZE || idle_rounds >= MAX_IDLE) {
+        printf("Parent: Buffer appears full, ending after %d total messages\n", total_messages);
+        break;
+    }
+    
+    sleep(1); // lightweight waiting
+  }
+  
   exit(0);
 }
