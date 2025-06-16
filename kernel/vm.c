@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -177,17 +180,23 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
+
+    pte_t *pte = walk(pagetable, a, 0);
+    if (pte && (*pte & PTE_V)) {
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      int pte_flags = PTE_FLAGS(*pte);
+      if (do_free && !(pte_flags & PTE_S)) {
+        kfree((void*)pa);
+      }
+      *pte = 0;
     }
-    *pte = 0;
   }
 }
 
@@ -436,4 +445,38 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+uint64
+map_shared_pages(struct proc* src_proc, struct proc* dst_proc, uint64 src_va, uint64 size) {
+    uint64 src_start = PGROUNDDOWN(src_va);
+    uint64 src_end = PGROUNDUP(src_va + size);
+    uint64 offset = src_va - src_start;
+    uint64 dst_va = PGROUNDUP(dst_proc->sz);  // next available address in dst
+
+    for (uint64 addr = src_start, dst_addr = dst_va; addr < src_end; addr += PGSIZE, dst_addr += PGSIZE) {
+        pte_t *pte = walk(src_proc->pagetable, addr, 0);
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U)) return 0;
+
+        uint64 pa = PTE2PA(*pte);
+        int flags = PTE_FLAGS(*pte);
+        if (mappages(dst_proc->pagetable, dst_addr, PGSIZE, pa, flags | PTE_S) < 0) return 0;
+    }
+    dst_proc->sz = dst_va + (src_end - src_start);
+    return dst_va + offset;
+}
+
+
+uint64
+unmap_shared_pages(struct proc* p, uint64 addr, uint64 size) {
+    uint64 start = PGROUNDDOWN(addr);
+    uint64 end = PGROUNDUP(addr + size);
+
+    for (uint64 a = start; a < end; a += PGSIZE) {
+        pte_t *pte = walk(p->pagetable, a, 0);
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_S)) return -1;
+    }
+    uvmunmap(p->pagetable, start, (end - start) / PGSIZE, 0);
+    p->sz -= (end - start);
+    return 0;
 }

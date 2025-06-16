@@ -8,6 +8,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct proc*    find_proc_by_pid(int);
 
 // bio.c
 void            binit(void);

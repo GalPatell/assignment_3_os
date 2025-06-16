@@ -681,3 +681,19 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+struct proc*
+find_proc_by_pid(int pid) {
+  struct proc *p;
+  
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED && p->pid == pid) {
+      // Keep the lock and return the process
+      return p;  // Caller must release p->lock
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
