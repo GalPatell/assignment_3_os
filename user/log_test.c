@@ -3,7 +3,7 @@
 #include "user/user.h"
 
 #define PGSIZE 4096
-#define MAX_CHILDREN 6  // Easy to change - can be 4, 6, 8, etc.
+#define MAX_CHILDREN 4 // Easy to change - can be 4, 6, 8, etc.
 #define HEADER_SIZE 4
 #define MAX_MSG_LEN 128  // Increased to accommodate longer messages
 
